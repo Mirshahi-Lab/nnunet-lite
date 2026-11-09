@@ -1,0 +1,145 @@
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Packaging / build
+build/
+dist/
+wheels/
+sdist/
+*.egg-info/
+*.egg
+.eggs/
+develop-eggs/
+eggs/
+lib64/
+parts/
+var/
+share/python-wheels/
+MANIFEST
+.installed.cfg
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Local packages dir
+packages/
+
+# ---------------------------------------------------------------------------
+# Virtual environments / env files
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------------------
+# Testing / coverage / type checking / linting
+# ---------------------------------------------------------------------------
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.cover
+.hypothesis/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# ---------------------------------------------------------------------------
+# Jupyter / IPython
+# ---------------------------------------------------------------------------
+.ipynb_checkpoints/
+profile_default/
+ipython_config.py
+
+# ---------------------------------------------------------------------------
+# Profiling / debugging
+# ---------------------------------------------------------------------------
+*.prof
+*.lprof
+*.pstats
+prof/
+
+# ---------------------------------------------------------------------------
+# ML experiment tracking & outputs
+# ---------------------------------------------------------------------------
+wandb/
+mlruns/
+lightning_logs/
+runs/
+tensorboard/
+outputs/
+checkpoints/
+*.ckpt
+*.pth
+*.pt
+*.onnx
+*.engine
+
+# nnU-Net style data/results directories
+nnUNet_raw/
+nnUNet_preprocessed/
+nnUNet_results/
+data/
+datasets/
+
+# Medical imaging data (keep out of git; may contain PHI)
+*.nii
+*.nii.gz
+*.mha
+*.mhd
+*.raw
+*.nrrd
+*.dcm
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.pkl
+*.b2nd
+
+# ---------------------------------------------------------------------------
+# Logs / temp
+# ---------------------------------------------------------------------------
+*.log
+logs/
+*.tmp
+*.swp
+*.swo
+*~
+tmp/
+
+# ---------------------------------------------------------------------------
+# Editors / IDEs
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ---------------------------------------------------------------------------
+# OS
+# ---------------------------------------------------------------------------
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
+.directory
+
+# ---------------------------------------------------------------------------
+# Claude Code (local settings)
+# ---------------------------------------------------------------------------
+.claude/settings.local.json
