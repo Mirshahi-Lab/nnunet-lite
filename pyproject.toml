@@ -1,7 +1,7 @@
 [project]
 name = "nnunet-lite"
 version = "0.1.0"
-description = "Add your description here"
+description = "Convert nnU-Net models to a standalone safetensors bundle and run nnU-Net-quality inference without nnU-Net"
 readme = "README.md"
 authors = [
     { name = "idinsmore1", email = "iandinsmore1@gmail.com" }
