@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.4.6",
+    "safetensors>=0.8.0",
     "torch>=2.9",
 ]
 
@@ -18,8 +19,11 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "ipykernel>=7.4.0",
+    "matplotlib>=3.11.2",
     "mypy>=2.4.1",
     "pre-commit>=4.7.0",
+    "pytest>=9.2.0",
     "ruff>=0.17.3",
 ]
 
@@ -30,6 +34,9 @@ torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_pla
 name = "pytorch-cu130"
 url = "https://download.pytorch.org/whl/cu130"
 explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 105
