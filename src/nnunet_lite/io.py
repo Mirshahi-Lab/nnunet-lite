@@ -102,10 +102,21 @@ def read_image(
     return data, spacings[0], geometries[0]
 
 
-def segmentation_image(segmentation: NDArray[Any], geometry: ImageGeometry) -> Any:
+def label_dtype(max_label: int) -> type[np.unsignedinteger[Any]]:
+    # Smallest unsigned type that holds every label the model can produce, so all
+    # outputs of one model share a type whatever labels a given case contains.
+    for dtype in (np.uint8, np.uint16, np.uint32):
+        if max_label <= np.iinfo(dtype).max:
+            return dtype
+    raise ValueError(f"Label {max_label} does not fit an unsigned 32-bit integer")
+
+
+def segmentation_image(segmentation: NDArray[Any], geometry: ImageGeometry, max_label: int) -> Any:
     # segmentation is (Z, Y, X) as returned by read_image; the result is on the
     # voxel grid of the file it was read from.
-    dtype = np.uint8 if int(segmentation.max(initial=0)) < 255 else np.uint16
+    if int(segmentation.max(initial=0)) > max_label or int(segmentation.min(initial=0)) < 0:
+        raise ValueError(f"Segmentation has values outside the model's labels 0..{max_label}")
+    dtype = label_dtype(max_label)
     voxels = segmentation.transpose((2, 1, 0)).astype(dtype, copy=False)
     if geometry.reoriented:
         canonical = nib.Nifti1Image(voxels, geometry.reader_affine)

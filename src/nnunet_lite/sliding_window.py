@@ -139,7 +139,8 @@ def _accumulate(
             logits[(slice(None), *tile)] += prediction
             counts[tile] += weight
     torch.div(logits, counts, out=logits)
-    if not torch.isfinite(logits).all():
+    # One class at a time: checking the whole tensor at once needs about twice its size again.
+    if not all(bool(torch.isfinite(channel).all()) for channel in logits):
         raise RuntimeError("Sliding-window prediction produced non-finite logits")
     return logits
 

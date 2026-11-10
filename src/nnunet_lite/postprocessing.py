@@ -76,7 +76,7 @@ def restore_segmentation(
     kwargs = resampling_kwargs(config.resampling_probabilities)
     current_spacing = _target_spacing(config, properties.spacing)
     shape = properties.shape_after_cropping
-    dtype = torch.uint8 if logits.shape[0] - 1 < 255 else torch.int16
+    dtype = torch.uint8 if logits.shape[0] - 1 <= 255 else torch.int16
 
     cropped = None
     if logits.device.type != "cpu":

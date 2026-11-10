@@ -10,7 +10,7 @@ import nibabel as nib
 import numpy as np
 import pytest
 
-from nnunet_lite.io import nifti_bytes, read_image, save_nifti, segmentation_image
+from nnunet_lite.io import label_dtype, nifti_bytes, read_image, save_nifti, segmentation_image
 
 # Columns of the affine: voxel axis 0 runs anterior->posterior, axis 1 superior->inferior,
 # axis 2 left->right, i.e. neither RAS nor a pure flip of it.
@@ -64,7 +64,7 @@ def test_segmentation_returns_to_the_input_grid(affine: np.ndarray, reader: str)
     image = make_image(affine)
     data, _, geometry = read_image([image], reader)
     # Using the image itself as the "segmentation" must reproduce the input file.
-    restored = segmentation_image(data[0].astype(np.uint8), geometry)
+    restored = segmentation_image(data[0].astype(np.uint8), geometry, 255)
     assert restored.shape == image.shape
     assert np.allclose(restored.affine, image.affine)
     assert np.array_equal(np.asarray(restored.dataobj), np.asarray(image.dataobj))
@@ -73,7 +73,7 @@ def test_segmentation_returns_to_the_input_grid(affine: np.ndarray, reader: str)
 def test_save_and_bytes(tmp_path: Path) -> None:
     image = make_image(PERMUTED)
     data, _, geometry = read_image([image], "NibabelIOWithReorient")
-    restored = segmentation_image(data[0].astype(np.uint8), geometry)
+    restored = segmentation_image(data[0].astype(np.uint8), geometry, 255)
     path = save_nifti(restored, tmp_path / "out" / "seg.nii.gz")
     assert [p.name for p in path.parent.iterdir()] == ["seg.nii.gz"]
     assert np.array_equal(np.asarray(nib.load(str(path)).dataobj), np.asarray(image.dataobj))
@@ -84,6 +84,35 @@ def test_save_and_bytes(tmp_path: Path) -> None:
         assert np.array_equal(reloaded, data)
     with pytest.raises(ValueError, match=r"\.nii"):
         save_nifti(restored, tmp_path / "seg.mha")
+
+
+def test_output_type_follows_the_models_label_count(tmp_path: Path) -> None:
+    assert [label_dtype(v) for v in (1, 255, 256, 65535, 65536)] == [
+        np.uint8,
+        np.uint8,
+        np.uint16,
+        np.uint16,
+        np.uint32,
+    ]
+    image = make_image(PERMUTED)
+    data, _, geometry = read_image([image], "NibabelIOWithReorient")
+    segmentation = (data[0] > 100).astype(np.int16)  # only labels 0 and 1 are present
+    for max_label, expected in ((2, np.uint8), (255, np.uint8), (256, np.uint16), (70000, np.uint32)):
+        path = save_nifti(
+            segmentation_image(segmentation, geometry, max_label), tmp_path / f"{max_label}.nii.gz"
+        )
+        # A real gzip-compressed NIfTI-1 file, not just a renamed array dump.
+        raw = gzip.decompress(path.read_bytes())
+        assert int.from_bytes(raw[:4], "little") == 348
+        assert raw[344:348] == b"n+1\x00"
+        saved = nib.load(str(path))
+        assert isinstance(saved, nib.Nifti1Image)
+        assert saved.get_data_dtype() == expected
+        assert saved.header["scl_slope"] in (1.0,) or np.isnan(saved.header["scl_slope"])
+        assert np.allclose(saved.affine, image.affine)
+        assert np.array_equal(np.asarray(saved.dataobj), np.asarray(image.dataobj) > 100)
+    with pytest.raises(ValueError, match="outside the model's labels"):
+        segmentation_image(segmentation + 5, geometry, 2)
 
 
 def test_multiple_channels() -> None:

@@ -49,7 +49,7 @@ class PredictionResult:
                 "This prediction was made from an array, so there is no image geometry "
                 "to write a file with; use .segmentation"
             )
-        return segmentation_image(self.segmentation.numpy(), self.geometry)
+        return segmentation_image(self.segmentation.numpy(), self.geometry, max(self.labels))
 
     def save(self, path: str | Path) -> Path:
         return save_nifti(self._image(), path)
