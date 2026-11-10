@@ -101,9 +101,19 @@ class Bundle:
         return output
 
 
+def _read_bundle_json(bundle_dir: str | Path) -> dict[str, Any]:
+    raw: dict[str, Any] = json.loads((Path(bundle_dir) / BUNDLE_FILE).read_text())
+    return raw
+
+
+def load_config(bundle_dir: str | Path) -> BundleConfig:
+    # Reads bundle.json only; the weights are neither loaded nor verified.
+    return BundleConfig.from_dict(_read_bundle_json(bundle_dir))
+
+
 def load_bundle(bundle_dir: str | Path, *, device: str | torch.device = "cpu") -> Bundle:
     bundle = Path(bundle_dir)
-    raw: dict[str, Any] = json.loads((bundle / BUNDLE_FILE).read_text())
+    raw = _read_bundle_json(bundle)
     config = BundleConfig.from_dict(raw)
     weights_path = bundle / str(raw["weights"]["file"])
     if not weights_path.is_file():

@@ -98,6 +98,7 @@ def make_model_dir(
     plans = {
         "dataset_name": "Dataset001_Synthetic",
         "plans_name": "nnUNetPlans",
+        "image_reader_writer": "NibabelIOWithReorient",
         "transpose_forward": [0, 1, 2],
         "transpose_backward": [0, 1, 2],
         "foreground_intensity_properties_per_channel": {
@@ -145,6 +146,7 @@ def test_convert_on_the_fly(model: tuple[Path, dict[str, torch.Tensor]]) -> None
     assert bundle.config.labels == {0: "background", 1: "organ", 2: "lesion"}
     assert bundle.config.mirror_axes == (0, 1, 2)
     assert bundle.config.trainer == "nnUNetTrainer"
+    assert bundle.config.preprocessing.image_reader == "NibabelIOWithReorient"
     channel = bundle.config.preprocessing.channels[0]
     assert (channel.lower, channel.upper, channel.mean, channel.std) == (-100.0, 200.0, 10.0, 50.0)
     patch = torch.randn(1, 1, *bundle.config.patch_size)

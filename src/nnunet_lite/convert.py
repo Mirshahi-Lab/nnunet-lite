@@ -158,6 +158,7 @@ def _preprocessing_config(
             )
         )
     return PreprocessingConfig(
+        image_reader=str(plans["image_reader_writer"]),
         target_spacing=tuple(float(s) for s in configuration["spacing"]),
         transpose_forward=tuple(int(a) for a in plans["transpose_forward"]),
         transpose_backward=tuple(int(a) for a in plans["transpose_backward"]),

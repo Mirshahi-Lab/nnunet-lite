@@ -10,6 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.4.6",
     "safetensors>=0.8.0",
+    "scipy>=1.17.1",
     "torch>=2.9",
 ]
 
@@ -67,3 +68,7 @@ exclude = ["^packages/"]
 strict = true
 warn_unreachable = true
 pretty = true
+
+[[tool.mypy.overrides]]
+module = ["scipy.*"]
+ignore_missing_imports = true

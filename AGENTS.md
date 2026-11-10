@@ -49,11 +49,18 @@ nl.convert(model_dir, output_dir="bundles/dataset485")   # convert + save in one
 
 # Later, with no nnU-Net files or dependencies
 bundle = nl.load_bundle("bundles/dataset485", device="cuda")
+
+# Preprocessing is independent of prediction: it needs only the config, not the weights.
+config = nl.load_config("bundles/dataset485")            # reads bundle.json only
+tensor, properties = nl.preprocess(volume, spacing, config.preprocessing)
 ```
 
 - `convert(model_dir, *, fold=0, checkpoint="checkpoint_final.pth", output_dir=None, overwrite=False, device="cpu") -> Bundle`
 - `load_bundle(bundle_dir, *, device="cpu") -> Bundle` — verifies the weights SHA-256 recorded in `bundle.json`.
 - `Bundle` — `config: BundleConfig`, `network: torch.nn.Module`, `save(output_dir, *, overwrite=False) -> Path`.
+- `load_config(bundle_dir) -> BundleConfig` — reads `bundle.json` only; weights are not loaded or verified.
+- `preprocess(data, spacing, config: PreprocessingConfig) -> tuple[torch.Tensor, PreprocessingProperties]` — transpose → crop to nonzero → normalize → resample. `data` is a numpy array or torch tensor of shape `(C, X, Y, Z)` (never modified); `spacing` has one value per spatial axis. Returns a float32 CPU tensor.
+- `PreprocessingProperties` — `spacing`, `shape_before_cropping`, `crop_bbox`, `shape_after_cropping`; what is needed to map a prediction back onto the input array.
 - `BundleConfig`, `NetworkConfig`, `PreprocessingConfig`, `ChannelConfig`, `ResamplingConfig` — frozen dataclasses mirroring `bundle.json` (`schema_version` 1).
 
 ### Conversion scope
@@ -62,8 +69,16 @@ bundle = nl.load_bundle("bundles/dataset485", device="cuda")
 - One fold per bundle. Not supported (raises `NotImplementedError`): cascade configurations, region-based labels, ignore label.
 - Checkpoints are loaded with `weights_only=True` plus a numpy-scalar allowlist; anything else in the pickle is refused rather than executed.
 
+### Preprocessing scope
+
+- Byte-equal to nnU-Net's `DefaultPreprocessor.run_case_npy` for the same array and spacing. Runs on CPU in numpy/scipy (float64 resampling, as nnU-Net does).
+- The input array must use the axis order and spacing order nnU-Net's image reader produced for the model. The reader's name is recorded as `config.preprocessing.image_reader` (e.g. the nibabel readers return `(z, y, x)` with spacing reversed, `NibabelIOWithReorient` after reorienting to RAS). File loading and reorientation are the caller's job and are out of scope for this library.
+- Normalization: `CTNormalization`, `ZScoreNormalization` (with and without mask), `RescaleTo01Normalization`, `RGBTo01Normalization`, `NoNormalization`.
+- Resampling: `resample_data_or_seg_to_shape` only (nnU-Net's default); others raise `NotImplementedError`.
+- 2D images need a singleton first spatial axis, as in nnU-Net.
+
 ## Testing
 
 - `uv run pytest` — synthetic nnU-Net folders, no nnunetv2 needed.
-- `tests/test_nnunet_equivalence.py` checks bitwise-equal logits against nnU-Net's own network (CPU FP32 and CUDA autocast). It needs nnunetv2 and real model folders, so run it with the leadup environment:
+- `tests/test_nnunet_equivalence.py` checks bitwise-equal logits against nnU-Net's own network (CPU FP32 and CUDA autocast), and `tests/test_nnunet_preprocessing_equivalence.py` checks byte-equal preprocessing against nnU-Net's `DefaultPreprocessor`. Both need nnunetv2 (the first also real model folders), so run them with the leadup environment:
   `PYTHONPATH=src packages/nnunet_model_conversion/.venv/bin/python -m pytest tests`

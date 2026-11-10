@@ -114,6 +114,9 @@ class ResamplingConfig:
 
 @dataclass(frozen=True)
 class PreprocessingConfig:
+    # nnU-Net image reader the model was trained with; it defines the axis order and
+    # orientation that input arrays must have. Informational: nothing here reads files.
+    image_reader: str
     target_spacing: tuple[float, ...]
     transpose_forward: tuple[int, ...]
     transpose_backward: tuple[int, ...]
@@ -124,6 +127,7 @@ class PreprocessingConfig:
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> PreprocessingConfig:
         return cls(
+            image_reader=str(raw["image_reader"]),
             target_spacing=tuple(float(v) for v in raw["target_spacing"]),
             transpose_forward=_int_tuple(raw["transpose_forward"]),
             transpose_backward=_int_tuple(raw["transpose_backward"]),
