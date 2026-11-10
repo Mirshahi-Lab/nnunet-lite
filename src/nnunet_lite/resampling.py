@@ -158,8 +158,16 @@ def _z_matrix(n_in: int, n_out: int, order: int) -> NDArray[np.float64]:
     return matrix
 
 
-def _apply_along(x: torch.Tensor, matrix: NDArray[np.float64], dim: int) -> torch.Tensor:
-    weights = torch.from_numpy(matrix).to(x.device)
+@lru_cache(maxsize=64)
+def _device_matrix(
+    kind: str, n_in: int, n_out: int, order: int, device: torch.device, dtype: torch.dtype
+) -> torch.Tensor:
+    # The same few matrices are applied to every channel and class: upload them once.
+    matrix = _resize_matrix(n_in, n_out, order) if kind == "resize" else _z_matrix(n_in, n_out, order)
+    return torch.from_numpy(matrix).to(device=device, dtype=dtype)
+
+
+def _apply_along(x: torch.Tensor, weights: torch.Tensor, dim: int) -> torch.Tensor:
     resized: torch.Tensor = torch.tensordot(x, weights, dims=([dim], [1]))
     return resized.movedim(-1, dim)
 
@@ -174,37 +182,58 @@ def resample_torch(
     order_z: int = 0,
     force_separate_z: bool | None = False,
     separate_z_anisotropy_threshold: float = ANISOTROPY_THRESHOLD,
+    dtype: torch.dtype = torch.float64,
+    check_finite: bool = True,
 ) -> torch.Tensor:
+    # dtype is the precision of the matrix products; the result has the dtype of data.
     if data.ndim != 4:
         raise ValueError(f"Expected (C, X, Y, Z) data, got shape {tuple(data.shape)}")
     old_shape = tuple(data.shape[1:])
     target = tuple(int(v) for v in new_shape)
     if old_shape == target:
         return data
-    if not torch.isfinite(data).all():
+    if check_finite and not torch.isfinite(data).all():
         # NaN/inf need scipy's exact propagation; leave them to the numpy path.
         raise RuntimeError("non-finite values in the input")
 
     axis = _separate_axis(
         force_separate_z, current_spacing, new_spacing, separate_z_anisotropy_threshold
     )
+    device = data.device
     in_plane = [d for d in range(3) if d != axis]
     # Shrink first so the later, larger products work on less data.
     in_plane.sort(key=lambda d: target[d] / old_shape[d])
-    output = torch.empty((data.shape[0], *target), dtype=data.dtype, device=data.device)
+    weights = [
+        (d, _device_matrix("resize", old_shape[d], target[d], order, device, dtype)) for d in in_plane
+    ]
+
+    # The separate axis, if it changes length: slices are picked (order_z == 0) or mixed.
+    z_axis = axis if axis is not None and old_shape[axis] != target[axis] else None
+    indices = None
+    z_weights = None
+    select_first = False
+    if z_axis is not None and order_z == 0:
+        indices = torch.from_numpy(_z_indices(old_shape[z_axis], target[z_axis])).to(device)
+        # Picking slices commutes with resizing inside them, so drop slices before the
+        # products when the axis shrinks and repeat them afterwards when it grows.
+        select_first = target[z_axis] < old_shape[z_axis]
+    elif z_axis is not None:
+        z_weights = _device_matrix("z", old_shape[z_axis], target[z_axis], order_z, device, dtype)
+
+    output = torch.empty((data.shape[0], *target), dtype=data.dtype, device=device)
     for channel in range(data.shape[0]):
-        x = data[channel].to(torch.float64)
+        x = data[channel].to(dtype)
+        if z_axis is not None and indices is not None and select_first:
+            x = x.index_select(z_axis, indices)
         # skimage clips each resize to its input range: per slice when one axis is separate.
         low = x.amin(dim=in_plane, keepdim=True)
         high = x.amax(dim=in_plane, keepdim=True)
-        for d in in_plane:
-            x = _apply_along(x, _resize_matrix(old_shape[d], target[d], order), d)
+        for d, matrix in weights:
+            x = _apply_along(x, matrix, d)
         x = torch.minimum(torch.maximum(x, low), high)
-        if axis is not None and old_shape[axis] != target[axis]:
-            if order_z == 0:
-                indices = torch.from_numpy(_z_indices(old_shape[axis], target[axis]))
-                x = x.index_select(axis, indices.to(x.device))
-            else:
-                x = _apply_along(x, _z_matrix(old_shape[axis], target[axis], order_z), axis)
+        if z_axis is not None and indices is not None and not select_first:
+            x = x.index_select(z_axis, indices)
+        elif z_axis is not None and z_weights is not None:
+            x = _apply_along(x, z_weights, z_axis)
         output[channel] = x
     return output

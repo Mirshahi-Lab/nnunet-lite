@@ -5,11 +5,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+import fastmorph
 import numpy as np
 import torch
 from numpy.typing import NDArray
-from scipy.ndimage import binary_fill_holes
 
+from ._device import resolve_device, warn_cpu_fallback
 from .config import ChannelConfig, PreprocessingConfig, ResamplingConfig
 from .resampling import SUPPORTED_FUNCTION, compute_new_shape, resample, resample_torch
 
@@ -39,23 +40,45 @@ class PreprocessingProperties:
     shape_after_cropping: tuple[int, ...]
 
 
-def _crop_to_nonzero(
-    data: NDArray[np.float32],
-) -> tuple[NDArray[np.float32], NDArray[np.bool_], tuple[tuple[int, int], ...]]:
-    mask: NDArray[np.bool_] = binary_fill_holes(np.any(data != 0, axis=0))
+def _bounding_box(occupied: Sequence[NDArray[np.bool_]]) -> tuple[tuple[int, int], ...]:
+    # occupied: for every axis, which positions hold a nonzero voxel.
     bbox = []
-    for axis in range(mask.ndim):
-        occupied = np.flatnonzero(np.any(mask, axis=tuple(a for a in range(mask.ndim) if a != axis)))
+    for line in occupied:
+        positions = np.flatnonzero(line)
         # nnU-Net keeps the full extent of an all-zero image.
-        bbox.append(
-            (int(occupied[0]), int(occupied[-1]) + 1) if occupied.size else (0, mask.shape[axis])
-        )
+        bbox.append((int(positions[0]), int(positions[-1]) + 1) if positions.size else (0, line.size))
+    return tuple(bbox)
+
+
+def _uses_mask(config: PreprocessingConfig) -> bool:
+    return any(c.normalization == "ZScoreNormalization" and c.use_mask_for_norm for c in config.channels)
+
+
+def _fill_holes(nonzero: NDArray[np.bool_]) -> NDArray[np.bool_]:
+    # Same result as scipy.ndimage.binary_fill_holes, which nnU-Net uses.
+    filled: NDArray[np.bool_] = np.asarray(
+        fastmorph.fill_holes(np.ascontiguousarray(nonzero)), dtype=bool
+    )
+    return filled
+
+
+def _crop_to_nonzero(
+    data: NDArray[np.float32], with_mask: bool
+) -> tuple[NDArray[np.float32], NDArray[np.bool_] | None, tuple[tuple[int, int], ...]]:
+    # nnU-Net fills the holes of the whole nonzero mask and then crops. Filling never
+    # changes the bounding box nor reaches outside it, so the box is taken first and
+    # only the cropped mask is filled, and only when a channel is normalized inside it.
+    nonzero = np.any(data != 0, axis=0)
+    bbox = _bounding_box(
+        [np.any(nonzero, axis=tuple(a for a in range(nonzero.ndim) if a != axis)) for axis in range(3)]
+    )
     slicer = tuple(slice(start, end) for start, end in bbox)
-    return data[(slice(None), *slicer)], mask[slicer], tuple(bbox)
+    mask = _fill_holes(nonzero[slicer]) if with_mask else None
+    return data[(slice(None), *slicer)], mask, bbox
 
 
 def _normalize(
-    image: NDArray[np.float32], channel: ChannelConfig, mask: NDArray[np.bool_]
+    image: NDArray[np.float32], channel: ChannelConfig, mask: NDArray[np.bool_] | None
 ) -> NDArray[np.float32]:
     scheme = channel.normalization
     if scheme == "CTNormalization":
@@ -63,7 +86,7 @@ def _normalize(
         image -= channel.mean
         image /= max(channel.std, _EPS)
     elif scheme == "ZScoreNormalization":
-        if channel.use_mask_for_norm:
+        if channel.use_mask_for_norm and mask is not None:
             inside = image[mask]
             image[mask] = (inside - inside.mean()) / max(inside.std(), _EPS)
         else:
@@ -109,8 +132,8 @@ def _preprocess_numpy(
         [0, *[axis + 1 for axis in config.transpose_forward]]
     )
     shape_before_cropping = volume.shape[1:]
-    volume, mask, bbox = _crop_to_nonzero(volume)
-    target_spacing = _target_spacing(config, original_spacing)
+    volume, mask, bbox = _crop_to_nonzero(volume, _uses_mask(config))
+    target_spacing = network_spacing(config, original_spacing)
     new_shape = compute_new_shape(volume.shape[1:], original_spacing, target_spacing)
 
     # Normalization must come before resampling, as in nnU-Net.
@@ -172,23 +195,18 @@ def _preprocess_torch(
     )
     shape_before_cropping = tuple(volume.shape[1:])
 
-    # Filling holes never changes the bounding box, so the box needs no fill.
     nonzero = (volume != 0).any(dim=0)
-    bbox = []
-    for axis in range(3):
-        occupied = nonzero.any(dim=[a for a in range(3) if a != axis]).nonzero().flatten()
-        bbox.append(
-            (int(occupied[0]), int(occupied[-1]) + 1) if occupied.numel() else (0, nonzero.shape[axis])
-        )
+    bbox = _bounding_box(
+        [nonzero.any(dim=[a for a in range(3) if a != axis]).cpu().numpy() for axis in range(3)]
+    )
     slicer = tuple(slice(start, end) for start, end in bbox)
     volume = volume[(slice(None), *slicer)]
     mask = None
-    if any(c.normalization == "ZScoreNormalization" and c.use_mask_for_norm for c in config.channels):
+    if _uses_mask(config):
         # The filled mask itself has no GPU equivalent; this one step runs on CPU.
-        filled = binary_fill_holes(nonzero[slicer].cpu().numpy())
-        mask = torch.from_numpy(filled).to(device)
+        mask = torch.from_numpy(_fill_holes(nonzero[slicer].cpu().numpy())).to(device)
 
-    target_spacing = _target_spacing(config, original_spacing)
+    target_spacing = network_spacing(config, original_spacing)
     shape_after_cropping = tuple(volume.shape[1:])
     new_shape = compute_new_shape(shape_after_cropping, original_spacing, target_spacing)
     for index, channel in enumerate(config.channels):
@@ -198,13 +216,13 @@ def _preprocess_torch(
     properties = PreprocessingProperties(
         spacing=original_spacing,
         shape_before_cropping=shape_before_cropping,
-        crop_bbox=tuple(bbox),
+        crop_bbox=bbox,
         shape_after_cropping=shape_after_cropping,
     )
     return volume.contiguous(), properties
 
 
-def _target_spacing(
+def network_spacing(
     config: PreprocessingConfig, original_spacing: tuple[float, ...]
 ) -> tuple[float, ...]:
     if len(config.target_spacing) < len(original_spacing):
@@ -239,22 +257,12 @@ def preprocess(
     kwargs = resampling_kwargs(config.resampling_data)
     original_spacing = tuple(float(spacing[axis]) for axis in config.transpose_forward)
 
-    if device is None:
-        target = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        target = torch.device(device)
+    target = resolve_device(device)
     if target.type != "cpu":
         try:
             return _preprocess_torch(data, original_spacing, config, kwargs, target)
         except ValueError:
             raise  # invalid input, not a device failure
         except Exception as error:  # CUDA out-of-memory, unsupported device or dtype, ...
-            reason = (str(error).strip() or type(error).__name__).splitlines()[0]
-            warnings.warn(
-                f"Preprocessing on {target} failed ({reason}); falling back to CPU",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            if target.type == "cuda":
-                torch.cuda.empty_cache()
+            warn_cpu_fallback("Preprocessing", target, error)
     return _preprocess_numpy(data, original_spacing, config, kwargs)

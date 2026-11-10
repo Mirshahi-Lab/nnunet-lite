@@ -17,11 +17,8 @@ from .network import UNet, build_network
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
     with path.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def _format_json(payload: dict[str, Any]) -> str:
@@ -120,7 +117,7 @@ def load_bundle(bundle_dir: str | Path, *, device: str | torch.device = "cpu") -
         raise FileNotFoundError(f"Bundle weights not found: {weights_path}")
     if _sha256(weights_path) != raw["weights"]["sha256"]:
         raise ValueError(f"Weights SHA-256 does not match {BUNDLE_FILE}: {weights_path}")
-    network = build_network(config.network)
-    network.load_state_dict(load_file(str(weights_path), device="cpu"), strict=True)
+    network = build_network(config.network, initialize=False)
+    network.load_state_dict(load_file(str(weights_path), device="cpu"), strict=True, assign=True)
     network.eval().to(torch.device(device))
     return Bundle(config=config, network=network)

@@ -11,6 +11,8 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
     "connected-components-3d>=4.1.1",
+    "fastmorph>=1.10.0",
+    "fastremap>=1.21.0",
     "nibabel>=5.4.2",
     "numpy>=2.4.6",
     "safetensors>=0.8.0",
@@ -74,7 +76,7 @@ warn_unreachable = true
 pretty = true
 
 [[tool.mypy.overrides]]
-module = ["scipy.*"]
+module = ["scipy.*", "fastmorph.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

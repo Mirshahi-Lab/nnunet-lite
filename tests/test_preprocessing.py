@@ -9,10 +9,12 @@ from typing import Any
 import numpy as np
 import pytest
 import torch
+from scipy.ndimage import binary_fill_holes, binary_opening
 from test_convert import make_model_dir
 
 import nnunet_lite as nl
 from nnunet_lite.config import ChannelConfig, PreprocessingConfig, ResamplingConfig
+from nnunet_lite.preprocessing import _crop_to_nonzero, _fill_holes
 
 CT = ChannelConfig(
     name="CT",
@@ -109,6 +111,56 @@ def test_masked_zscore_leaves_outside_at_zero() -> None:
     inside = output[output != 0]
     assert abs(float(inside.mean())) < 1e-4
     assert abs(float(inside.std()) - 1) < 1e-3
+
+
+def hollow(shape: tuple[int, ...], thickness: int = 2) -> np.ndarray:
+    mask = np.zeros(shape, dtype=bool)
+    outer = tuple(slice(size // 4, size - size // 4) for size in shape)
+    inner = tuple(slice(size // 4 + thickness, size - size // 4 - thickness) for size in shape)
+    mask[outer] = True
+    mask[inner] = False
+    return mask
+
+
+@pytest.mark.parametrize(
+    "mask",
+    [
+        np.zeros((6, 7, 8), dtype=bool),
+        np.ones((6, 7, 8), dtype=bool),
+        hollow((16, 18, 20)),  # enclosed cavity
+        hollow((16, 18, 20))[4:],  # cavity open to the border
+        hollow((1, 20, 20)),  # 2D image: singleton first axis, nothing is enclosed
+        binary_opening(np.random.default_rng(0).random((30, 40, 50)) > 0.35),
+    ],
+    ids=["empty", "full", "cavity", "open-cavity", "2d", "random"],
+)
+def test_hole_filling_matches_scipy(mask: np.ndarray) -> None:
+    filled = _fill_holes(mask)
+    assert filled.dtype == bool
+    np.testing.assert_array_equal(filled, binary_fill_holes(mask))
+
+
+@pytest.mark.parametrize("use_mask", [True, False])
+def test_cropping_matches_fill_then_crop(use_mask: bool) -> None:
+    # nnU-Net fills the holes of the whole nonzero mask and then crops; the mask is
+    # only produced when a channel is normalized inside it.
+    data = np.zeros((1, 20, 24, 28), dtype=np.float32)
+    region = hollow((14, 16, 18), thickness=3)
+    data[0, 2:16, 3:19, 4:22][region] = np.random.default_rng(0).uniform(1, 5, int(region.sum()))
+    cropped, mask, bbox = _crop_to_nonzero(data, use_mask)
+
+    filled = binary_fill_holes(np.any(data != 0, axis=0))
+    box = tuple(
+        slice(*np.flatnonzero(filled.any(axis=others))[[0, -1]] + (0, 1))
+        for others in ((1, 2), (0, 2), (0, 1))
+    )
+    assert bbox == tuple((s.start, s.stop) for s in box)
+    np.testing.assert_array_equal(cropped, data[(slice(None), *box)])
+    if use_mask:
+        assert mask is not None and mask.sum() > (cropped[0] != 0).sum()  # the cavity was filled
+        np.testing.assert_array_equal(mask, filled[box])
+    else:
+        assert mask is None
 
 
 @pytest.mark.parametrize(
