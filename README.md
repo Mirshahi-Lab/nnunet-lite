@@ -7,8 +7,8 @@ Convert an nnU-Net model into a simple bundle (`bundle.json` + `weights.safetens
 `nl.preprocess` runs nnU-Net's preprocessing (crop to nonzero → normalize → resample) on a raw array. It has two paths:
 
 ```python
-tensor, props = nl.preprocess(volume, spacing, config.preprocessing)                 # GPU if available
-tensor, props = nl.preprocess(volume, spacing, config.preprocessing, device="cpu")   # exact nnU-Net path
+tensor, props = nl.preprocess(volume, spacing, config.preprocessing)  # GPU if available
+tensor, props = nl.preprocess(volume, spacing, config.preprocessing, device="cpu")  # exact nnU-Net path
 ```
 
 | | CPU (`device="cpu"`) | GPU (default when CUDA is available) |

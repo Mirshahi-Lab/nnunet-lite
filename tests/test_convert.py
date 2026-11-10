@@ -226,3 +226,44 @@ def test_missing_checkpoint(tmp_path: Path) -> None:
     model_dir, _ = make_model_dir(tmp_path, "3d_fullres")
     with pytest.raises(FileNotFoundError):
         nl.convert(model_dir, fold=3)
+
+
+def test_inference_settings_are_stored_in_the_bundle(tmp_path: Path) -> None:
+    model_dir, _ = make_model_dir(tmp_path, "3d_fullres")
+    default = nl.convert(model_dir, output_dir=tmp_path / "default")
+    assert default.config.inference == nl.InferenceConfig(
+        tile_step_size=0.5,
+        use_gaussian=True,
+        gaussian_sigma_scale=0.125,
+        gaussian_value_scaling_factor=10.0,
+    )
+    raw = json.loads((tmp_path / "default" / "bundle.json").read_text())
+    assert raw["schema_version"] == 2
+    assert raw["inference"] == {
+        "tile_step_size": 0.5,
+        "use_gaussian": True,
+        "gaussian_sigma_scale": 0.125,
+        "gaussian_value_scaling_factor": 10.0,
+    }
+
+    custom = nl.InferenceConfig(tile_step_size=0.75, use_gaussian=False)
+    nl.convert(model_dir, output_dir=tmp_path / "custom", inference=custom)
+    assert nl.load_config(tmp_path / "custom").inference == custom
+    assert nl.load_bundle(tmp_path / "custom").config.inference == custom
+    with pytest.raises(ValueError, match="tile_step_size"):
+        nl.InferenceConfig(tile_step_size=0.0)
+
+
+def test_schema_1_bundles_load_with_default_inference_settings(tmp_path: Path) -> None:
+    model_dir, _ = make_model_dir(tmp_path, "3d_fullres")
+    converted = nl.convert(model_dir, output_dir=tmp_path / "bundle")
+    bundle_json = tmp_path / "bundle" / "bundle.json"
+    raw = json.loads(bundle_json.read_text())
+    del raw["inference"]
+    raw["schema_version"] = 1
+    bundle_json.write_text(json.dumps(raw))
+    assert nl.load_bundle(tmp_path / "bundle").config == converted.config
+    raw["schema_version"] = 3
+    bundle_json.write_text(json.dumps(raw))
+    with pytest.raises(ValueError, match="schema_version"):
+        nl.load_config(tmp_path / "bundle")

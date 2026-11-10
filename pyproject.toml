@@ -8,6 +8,8 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
+    "connected-components-3d>=4.1.1",
+    "nibabel>=5.4.2",
     "numpy>=2.4.6",
     "safetensors>=0.8.0",
     "scipy>=1.17.1",
@@ -72,3 +74,8 @@ pretty = true
 [[tool.mypy.overrides]]
 module = ["scipy.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# nibabel's orientation and image-construction helpers are not annotated.
+module = ["nnunet_lite.io"]
+disallow_untyped_calls = false

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 BUNDLE_FILE = "bundle.json"
 WEIGHTS_FILE = "weights.safetensors"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+# Schema 1 has no inference section; it loads with nnU-Net's defaults.
+_READABLE_SCHEMA_VERSIONS = (1, 2)
 
 SUPPORTED_ARCHITECTURES = ("PlainConvUNet", "ResidualEncoderUNet")
 SUPPORTED_NONLINS = ("LeakyReLU", "ReLU")
@@ -115,7 +117,7 @@ class ResamplingConfig:
 @dataclass(frozen=True)
 class PreprocessingConfig:
     # nnU-Net image reader the model was trained with; it defines the axis order and
-    # orientation that input arrays must have. Informational: nothing here reads files.
+    # orientation that input arrays must have, and how Predictor reads image files.
     image_reader: str
     target_spacing: tuple[float, ...]
     transpose_forward: tuple[int, ...]
@@ -138,6 +140,31 @@ class PreprocessingConfig:
 
 
 @dataclass(frozen=True)
+class InferenceConfig:
+    # Sliding-window settings. nnU-Net keeps these as nnUNetPredictor defaults rather
+    # than in the plans, so conversion records those defaults unless told otherwise.
+    tile_step_size: float = 0.5
+    use_gaussian: bool = True
+    gaussian_sigma_scale: float = 0.125
+    gaussian_value_scaling_factor: float = 10.0
+
+    def __post_init__(self) -> None:
+        if not 0 < self.tile_step_size <= 1:
+            raise ValueError(f"tile_step_size must be in (0, 1], got {self.tile_step_size}")
+        if self.gaussian_sigma_scale <= 0 or self.gaussian_value_scaling_factor <= 0:
+            raise ValueError("gaussian_sigma_scale and gaussian_value_scaling_factor must be positive")
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> InferenceConfig:
+        return cls(
+            tile_step_size=float(raw["tile_step_size"]),
+            use_gaussian=bool(raw["use_gaussian"]),
+            gaussian_sigma_scale=float(raw["gaussian_sigma_scale"]),
+            gaussian_value_scaling_factor=float(raw["gaussian_value_scaling_factor"]),
+        )
+
+
+@dataclass(frozen=True)
 class BundleConfig:
     dataset: str
     trainer: str
@@ -150,6 +177,7 @@ class BundleConfig:
     # Axes nnU-Net allows for test-time mirroring; empty if the trainer disabled it.
     mirror_axes: tuple[int, ...]
     labels: dict[int, str]
+    inference: InferenceConfig = field(default_factory=InferenceConfig)
 
     def to_dict(self) -> dict[str, Any]:
         raw = asdict(self)
@@ -159,7 +187,7 @@ class BundleConfig:
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> BundleConfig:
         version = raw.get("schema_version")
-        if version != SCHEMA_VERSION:
+        if version not in _READABLE_SCHEMA_VERSIONS:
             raise ValueError(f"Unsupported bundle schema_version {version!r}; expected {SCHEMA_VERSION}")
         return cls(
             dataset=str(raw["dataset"]),
@@ -172,4 +200,5 @@ class BundleConfig:
             patch_size=_int_tuple(raw["patch_size"]),
             mirror_axes=_int_tuple(raw["mirror_axes"]),
             labels={int(index): str(name) for index, name in raw["labels"].items()},
+            inference=InferenceConfig.from_dict(raw["inference"]) if version >= 2 else InferenceConfig(),
         )

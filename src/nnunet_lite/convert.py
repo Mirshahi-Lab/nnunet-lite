@@ -13,6 +13,7 @@ from .bundle import Bundle, state_dict_mismatches
 from .config import (
     BundleConfig,
     ChannelConfig,
+    InferenceConfig,
     NetworkConfig,
     PreprocessingConfig,
     ResamplingConfig,
@@ -230,6 +231,7 @@ def convert(
     output_dir: str | Path | None = None,
     overwrite: bool = False,
     device: str | torch.device = "cpu",
+    inference: InferenceConfig | None = None,
 ) -> Bundle:
     source = Path(model_dir)
     checkpoint_path = source / f"fold_{fold}" / checkpoint
@@ -257,6 +259,7 @@ def convert(
         patch_size=tuple(int(p) for p in configuration["patch_size"]),
         mirror_axes=tuple(int(a) for a in state.get("inference_allowed_mirroring_axes") or ()),
         labels=labels,
+        inference=inference if inference is not None else InferenceConfig(),
     )
 
     network = build_network(config.network)
