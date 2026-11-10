@@ -262,8 +262,8 @@ def convert(
         inference=inference if inference is not None else InferenceConfig(),
     )
 
-    network = build_network(config.network)
-    network.load_state_dict(_canonical_weights(state["network_weights"]), strict=True)
+    network = build_network(config.network, initialize=False)
+    network.load_state_dict(_canonical_weights(state["network_weights"]), strict=True, assign=True)
     network.eval().to(torch.device(device))
     bundle = Bundle(config=config, network=network)
     if output_dir is not None:

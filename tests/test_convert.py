@@ -168,6 +168,25 @@ def test_save_and_load_round_trip(model: tuple[Path, dict[str, torch.Tensor]], t
         assert torch.equal(converted.network(patch), loaded.network(patch))
 
 
+def test_network_built_without_initialization_loads_the_same_weights(
+    model: tuple[Path, dict[str, torch.Tensor]],
+) -> None:
+    model_dir, _ = model
+    bundle = nl.convert(model_dir)
+    state = bundle.network.state_dict()
+
+    reference = build_network(bundle.config.network)
+    reference.load_state_dict(state, strict=True)
+    empty = build_network(bundle.config.network, initialize=False)
+    assert all(parameter.is_meta for parameter in empty.parameters())
+    empty.load_state_dict(state, strict=True, assign=True)
+    assert not state_dict_mismatches(reference.state_dict(), empty.state_dict())
+
+    patch = torch.randn(1, bundle.config.network.input_channels, *bundle.config.patch_size)
+    with torch.inference_mode():
+        assert torch.equal(empty.eval()(patch), reference.eval()(patch))
+
+
 def test_save_refuses_to_overwrite(tmp_path: Path) -> None:
     model_dir, _ = make_model_dir(tmp_path, "3d_fullres")
     bundle = nl.convert(model_dir, output_dir=tmp_path / "bundle")

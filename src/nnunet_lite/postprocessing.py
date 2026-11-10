@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import warnings
 from typing import Any
 
 import numpy as np
 import torch
 
+from ._device import warn_cpu_fallback
 from .config import PreprocessingConfig
-from .preprocessing import PreprocessingProperties, _target_spacing, resampling_kwargs
+from .preprocessing import PreprocessingProperties, network_spacing, resampling_kwargs
 from .resampling import resample, resample_torch
 
 # Port of nnU-Net's convert_predicted_logits_to_segmentation_with_correct_shape:
@@ -26,18 +26,31 @@ def _argmax_torch(
     new_spacing: tuple[float, ...],
     kwargs: dict[str, Any],
     dtype: torch.dtype,
+    device: torch.device,
 ) -> torch.Tensor:
+    # Works on `device`; logits that live elsewhere are moved there one class at a time.
     if tuple(logits.shape[1:]) == shape:
         return logits.argmax(0).to(dtype)
-    best = resample_torch(logits[:1], shape, current_spacing, new_spacing, **kwargs)[0]
-    labels = torch.zeros(shape, dtype=dtype, device=logits.device)
-    for index in range(1, logits.shape[0]):
-        candidate = resample_torch(
-            logits[index : index + 1], shape, current_spacing, new_spacing, **kwargs
+
+    def resampled(index: int) -> torch.Tensor:
+        # float32 products are ample: the result is rounded to float16 before it is
+        # compared. The sliding window has already checked that the logits are finite.
+        return resample_torch(
+            logits[index : index + 1].to(device),
+            shape,
+            current_spacing,
+            new_spacing,
+            dtype=torch.float32,
+            check_finite=False,
+            **kwargs,
         )[0]
-        better = candidate > best
-        labels[better] = index
-        best = torch.where(better, candidate, best)
+
+    best = resampled(0)
+    labels = torch.zeros(shape, dtype=dtype, device=device)
+    for index in range(1, logits.shape[0]):
+        candidate = resampled(index)
+        labels.masked_fill_(candidate > best, index)
+        torch.maximum(best, candidate, out=best)
     return labels
 
 
@@ -69,29 +82,30 @@ def _argmax_numpy(
 
 
 def restore_segmentation(
-    logits: torch.Tensor, properties: PreprocessingProperties, config: PreprocessingConfig
+    logits: torch.Tensor,
+    properties: PreprocessingProperties,
+    config: PreprocessingConfig,
+    *,
+    device: str | torch.device | None = None,
 ) -> torch.Tensor:
     # logits: (classes, X, Y, Z) at network resolution. Returns integer labels on the
     # CPU with the shape and axis order of the array that was preprocessed.
+    # device: where to resample, by default where the logits are. Logits that did not
+    # fit on the GPU can still be resampled there, one class at a time.
     kwargs = resampling_kwargs(config.resampling_probabilities)
-    current_spacing = _target_spacing(config, properties.spacing)
+    current_spacing = network_spacing(config, properties.spacing)
     shape = properties.shape_after_cropping
     dtype = torch.uint8 if logits.shape[0] - 1 <= 255 else torch.int16
+    compute = logits.device if device is None else torch.device(device)
 
     cropped = None
-    if logits.device.type != "cpu":
+    if compute.type != "cpu":
         try:
-            cropped = _argmax_torch(logits, shape, current_spacing, properties.spacing, kwargs, dtype)
-            cropped = cropped.cpu()
+            cropped = _argmax_torch(
+                logits, shape, current_spacing, properties.spacing, kwargs, dtype, compute
+            ).cpu()
         except Exception as error:  # CUDA out-of-memory, unsupported device or dtype, ...
-            reason = (str(error).strip() or type(error).__name__).splitlines()[0]
-            warnings.warn(
-                f"Restoring the segmentation on {logits.device} failed ({reason}); falling back to CPU",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            if logits.device.type == "cuda":
-                torch.cuda.empty_cache()
+            warn_cpu_fallback("Restoring the segmentation", compute, error)
     if cropped is None:
         cropped = _argmax_numpy(logits, shape, current_spacing, properties.spacing, kwargs, dtype)
 

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import cc3d
+import fastremap
 import numpy as np
 import torch
 from numpy.typing import NDArray
@@ -65,13 +66,18 @@ def component_stats(
 ) -> dict[int, dict[str, Any]]:
     # Components never span two labels, so every label is analysed on its own; labels
     # that were not asked for are removed first and cost nothing.
-    wanted = np.zeros(max(int(segmentation.max(initial=0)), *label_ids, 0) + 1, dtype=bool)
-    wanted[list(label_ids)] = True
-    volume = np.ascontiguousarray(np.where(wanted[segmentation], segmentation, 0))
-    components = cc3d.connected_components(volume, connectivity=26)
-    sizes = np.bincount(components.ravel())
-    component_labels = np.zeros(len(sizes), dtype=np.int64)
-    component_labels[components.ravel()] = volume.ravel()
+    selected = [int(label) for label in label_ids]
+    if set(selected) >= set(range(1, int(segmentation.max(initial=0)) + 1)):
+        volume = np.ascontiguousarray(segmentation)  # nothing to remove
+    else:
+        volume = np.ascontiguousarray(fastremap.mask_except(segmentation, selected))
+    components, count = cc3d.connected_components(volume, connectivity=26, return_N=True)
+    sizes = np.zeros(count + 1, dtype=np.int64)
+    found, voxels = fastremap.unique(components, return_counts=True)
+    sizes[found] = voxels
+    component_labels = np.zeros(count + 1, dtype=np.int64)
+    for component, label in fastremap.component_map(components, volume).items():
+        component_labels[int(component)] = int(label)
 
     faces = []
     for axis in range(components.ndim):
@@ -120,16 +126,18 @@ def confidence_stats(
     for start in range(0, logits.shape[1], _CHUNK_SLICES):
         chunk = logits[:, start : start + _CHUNK_SLICES].float().flatten(1)
         probability = (chunk / temperature).softmax(0)
-        top = probability.topk(2, dim=0).values
-        margin = top[0] - top[1]
+        top, prediction = probability.max(0)
         entropy = -(probability * probability.clamp_min(1e-8).log()).sum(0) / log_classes
-        prediction = probability.argmax(0)
+        probability_sum += probability.sum(1).double()
+        # The runner-up is the maximum once the winner is taken out; the probabilities
+        # are not needed after this, so they are overwritten.
+        probability.scatter_(0, prediction[None], -1.0)
+        margin = top - probability.amax(0)
         count += torch.bincount(prediction, minlength=classes)
         margin_sum += torch.bincount(prediction, margin.double(), minlength=classes)
         low_margin += torch.bincount(prediction, (margin < LOW_MARGIN).double(), minlength=classes)
         entropy_sum += torch.bincount(prediction, entropy.double(), minlength=classes)
-        probability_on_prediction += torch.bincount(prediction, top[0].double(), minlength=classes)
-        probability_sum += probability.sum(1).double()
+        probability_on_prediction += torch.bincount(prediction, top.double(), minlength=classes)
 
     voxels = count.clamp_min(1)
     estimated_dice = (2 * probability_on_prediction / (probability_sum + count).clamp_min(1e-6)).cpu()

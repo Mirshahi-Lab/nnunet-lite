@@ -237,6 +237,31 @@ def test_multi_predictor_matches_single_predictors(
         nl.MultiPredictor({})
 
 
+def test_multi_predictor_decodes_a_file_once_per_reader(
+    bundle: nl.Bundle, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = volume()
+    path = tmp_path / "ct.nii.gz"
+    nib.save(nifti(data, SPACING), path)
+    other = with_preprocessing(bundle, target_spacing=(3.0, 2.0, 2.0))
+    assert other.config.preprocessing != bundle.config.preprocessing
+
+    reads = []
+    read_image = predict_module.read_image
+
+    def counting(sources: object, image_reader: str) -> object:
+        reads.append(image_reader)
+        return read_image(sources, image_reader)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(predict_module, "read_image", counting)
+    multi = nl.MultiPredictor({"a": bundle, "b": other}, device="cpu")
+    results = multi.predict(path)
+    assert reads == [bundle.config.preprocessing.image_reader]
+    for name, single in (("a", bundle), ("b", other)):
+        expected = nl.Predictor(single, device="cpu").predict(path).segmentation
+        assert torch.equal(results[name].segmentation, expected)
+
+
 def test_loads_bundles_from_directories(tmp_path: Path) -> None:
     nl.convert(make_model_dir(tmp_path, "3d_fullres")[0], output_dir=tmp_path / "bundle")
     data = volume()

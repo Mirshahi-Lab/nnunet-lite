@@ -239,5 +239,10 @@ class UNet(nn.Module):
         return self.decoder(self.encoder(x))  # type: ignore[no-any-return]
 
 
-def build_network(config: NetworkConfig) -> UNet:
-    return UNet(config)
+def build_network(config: NetworkConfig, *, initialize: bool = True) -> UNet:
+    if initialize:
+        return UNet(config)
+    # For weights that are loaded straight away: parameters get no storage and no random
+    # initialization. Load with load_state_dict(..., assign=True).
+    with torch.device("meta"):
+        return UNet(config)

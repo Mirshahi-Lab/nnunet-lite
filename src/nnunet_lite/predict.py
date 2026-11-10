@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from numpy.typing import NDArray
 
+from ._device import resolve_device
 from .bundle import Bundle, load_bundle
 from .config import BundleConfig, PreprocessingConfig
 from .io import (
@@ -80,7 +81,18 @@ def _image_sources(source: Any) -> list[Any]:
     return [load_nifti(s) for s in sources]
 
 
-def _read_input(source: Any, spacing: Sequence[float] | None, config: PreprocessingConfig) -> _Input:
+def _prepare(source: Any) -> Any:
+    return source if _is_array(source) else _image_sources(source)
+
+
+def _read_input(
+    source: Any,
+    spacing: Sequence[float] | None,
+    config: PreprocessingConfig,
+    cache: dict[str, _Input] | None = None,
+) -> _Input:
+    # cache: images already read from this source, by reader name. Reading decodes the
+    # whole file, and every model with the same reader gets the same array.
     if _is_array(source):
         if spacing is None:
             raise ValueError("spacing is required when predicting from an array")
@@ -92,14 +104,12 @@ def _read_input(source: Any, spacing: Sequence[float] | None, config: Preprocess
             f"Model expects {len(config.channels)} channel image(s) "
             f"({', '.join(c.name for c in config.channels)}), got {len(source)}"
         )
-    data, file_spacing, geometry = read_image(source, config.image_reader)
-    return _Input(data, file_spacing, geometry)
-
-
-def _resolve_device(device: str | torch.device | None) -> torch.device:
-    if device is None:
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device(device)
+    if cache is not None and config.image_reader in cache:
+        return cache[config.image_reader]
+    image = _Input(*read_image(source, config.image_reader))
+    if cache is not None:
+        cache[config.image_reader] = image
+    return image
 
 
 class Predictor:
@@ -112,7 +122,7 @@ class Predictor:
     ) -> None:
         if batch_size < 1:
             raise ValueError("batch_size must be at least 1")
-        self.device = _resolve_device(device)
+        self.device = resolve_device(device)
         self.batch_size = batch_size
         if isinstance(bundle, Bundle):
             bundle.network.eval().to(self.device)
@@ -133,8 +143,7 @@ class Predictor:
         mirror: bool = False,
     ) -> PredictionResult:
         label_ids = resolve_labels(qc, self.config.labels)
-        prepared = source if _is_array(source) else _image_sources(source)
-        image = _read_input(prepared, spacing, self.config.preprocessing)
+        image = _read_input(_prepare(source), spacing, self.config.preprocessing)
         tensor, properties = preprocess(
             image.data, image.spacing, self.config.preprocessing, device=self.device
         )
@@ -156,7 +165,7 @@ class Predictor:
             self.bundle.network, tensor, config, mirror=mirror, batch_size=self.batch_size
         )
         confidence = confidence_stats(logits, label_ids) if label_ids else {}
-        segmentation = restore_segmentation(logits, properties, config.preprocessing)
+        segmentation = restore_segmentation(logits, properties, config.preprocessing, device=self.device)
         del logits
         qc = None
         if with_qc:
@@ -206,7 +215,7 @@ class MultiPredictor:
         }
 
         # Models with the same preprocessing share one preprocessed tensor, and the
-        # input is parsed once however many models and readers use it.
+        # input is parsed once and decoded once per reader, however many models use it.
         groups: list[tuple[PreprocessingConfig, list[str]]] = []
         for name, predictor in self.predictors.items():
             preprocessing = predictor.config.preprocessing
@@ -217,10 +226,11 @@ class MultiPredictor:
             else:
                 groups.append((preprocessing, [name]))
 
-        prepared = source if _is_array(source) else _image_sources(source)
+        prepared = _prepare(source)
+        images: dict[str, _Input] = {}
         results: dict[str, PredictionResult] = {}
         for preprocessing, names in groups:
-            image = _read_input(prepared, spacing, preprocessing)
+            image = _read_input(prepared, spacing, preprocessing, images)
             device = self.predictors[names[0]].device
             tensor, properties = preprocess(image.data, image.spacing, preprocessing, device=device)
             geometry = image.geometry
