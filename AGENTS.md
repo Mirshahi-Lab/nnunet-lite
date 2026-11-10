@@ -52,14 +52,15 @@ bundle = nl.load_bundle("bundles/dataset485", device="cuda")
 
 # Preprocessing is independent of prediction: it needs only the config, not the weights.
 config = nl.load_config("bundles/dataset485")            # reads bundle.json only
-tensor, properties = nl.preprocess(volume, spacing, config.preprocessing)
+tensor, properties = nl.preprocess(volume, spacing, config.preprocessing)                 # GPU if available
+tensor, properties = nl.preprocess(volume, spacing, config.preprocessing, device="cpu")   # exact nnU-Net path
 ```
 
 - `convert(model_dir, *, fold=0, checkpoint="checkpoint_final.pth", output_dir=None, overwrite=False, device="cpu") -> Bundle`
 - `load_bundle(bundle_dir, *, device="cpu") -> Bundle` — verifies the weights SHA-256 recorded in `bundle.json`.
 - `Bundle` — `config: BundleConfig`, `network: torch.nn.Module`, `save(output_dir, *, overwrite=False) -> Path`.
 - `load_config(bundle_dir) -> BundleConfig` — reads `bundle.json` only; weights are not loaded or verified.
-- `preprocess(data, spacing, config: PreprocessingConfig) -> tuple[torch.Tensor, PreprocessingProperties]` — transpose → crop to nonzero → normalize → resample. `data` is a numpy array or torch tensor of shape `(C, X, Y, Z)` (never modified); `spacing` has one value per spatial axis. Returns a float32 CPU tensor.
+- `preprocess(data, spacing, config: PreprocessingConfig, *, device=None) -> tuple[torch.Tensor, PreprocessingProperties]` — transpose → crop to nonzero → normalize → resample. `data` is a numpy array or torch tensor of shape `(C, X, Y, Z)` (never modified); `spacing` has one value per spatial axis. `device=None` uses CUDA when available, otherwise CPU. Returns a float32 tensor on the device it was computed on.
 - `PreprocessingProperties` — `spacing`, `shape_before_cropping`, `crop_bbox`, `shape_after_cropping`; what is needed to map a prediction back onto the input array.
 - `BundleConfig`, `NetworkConfig`, `PreprocessingConfig`, `ChannelConfig`, `ResamplingConfig` — frozen dataclasses mirroring `bundle.json` (`schema_version` 1).
 
@@ -71,7 +72,9 @@ tensor, properties = nl.preprocess(volume, spacing, config.preprocessing)
 
 ### Preprocessing scope
 
-- Byte-equal to nnU-Net's `DefaultPreprocessor.run_case_npy` for the same array and spacing. Runs on CPU in numpy/scipy (float64 resampling, as nnU-Net does).
+- `device="cpu"`: byte-equal to nnU-Net's `DefaultPreprocessor.run_case_npy` for the same array and spacing. Runs in numpy/scipy (float64 resampling, as nnU-Net does).
+- GPU (a deliberate change from nnU-Net, torch only, no extra dependency): the same steps in torch. Spline resampling is applied as one float64 matrix product per axis, with the matrices taken from the same scipy call the CPU path makes, so output differs from the CPU path only by float32 rounding (max abs difference ~5e-7 on normalized data, ~93% of voxels bit-identical) and crop box/shapes are identical. Roughly 20–40x faster than CPU on full-size CTs (RTX 2080 Ti). Only the hole-filled mask for masked z-score still runs on CPU.
+- If the GPU path fails for any reason (out of memory, CUDA error, non-finite input) a `RuntimeWarning` is emitted and the exact CPU path runs instead; the result is then a CPU tensor.
 - The input array must use the axis order and spacing order nnU-Net's image reader produced for the model. The reader's name is recorded as `config.preprocessing.image_reader` (e.g. the nibabel readers return `(z, y, x)` with spacing reversed, `NibabelIOWithReorient` after reorienting to RAS). File loading and reorientation are the caller's job and are out of scope for this library.
 - Normalization: `CTNormalization`, `ZScoreNormalization` (with and without mask), `RescaleTo01Normalization`, `RGBTo01Normalization`, `NoNormalization`.
 - Resampling: `resample_data_or_seg_to_shape` only (nnU-Net's default); others raise `NotImplementedError`.

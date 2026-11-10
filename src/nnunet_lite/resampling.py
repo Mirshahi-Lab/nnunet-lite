@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from functools import lru_cache
 from typing import Any
 
 import numpy as np
+import torch
 from numpy.typing import NDArray
 from scipy.ndimage import map_coordinates, zoom
 
@@ -111,4 +113,98 @@ def resample(
             output[channel] = intermediate
         else:
             output[channel] = map_coordinates(intermediate, coordinates, order=order_z, mode="nearest")
+    return output
+
+
+# --- torch implementation (any device) ---------------------------------------
+# Spline resizing is linear and separable, so each axis is one matrix product.
+# The matrices come from the same scipy call the numpy path makes, which keeps
+# the result within float64 rounding of it instead of re-deriving the splines.
+
+
+@lru_cache(maxsize=64)
+def _resize_matrix(n_in: int, n_out: int, order: int) -> NDArray[np.float64]:
+    factor = 1 / np.divide(n_in, n_out)
+    columns = [
+        zoom(impulse, factor, order=order, mode="nearest", grid_mode=True) for impulse in np.eye(n_in)
+    ]
+    matrix: NDArray[np.float64] = np.stack(columns, axis=1)
+    if matrix.shape != (n_out, n_in):
+        raise RuntimeError(f"Resize matrix has shape {matrix.shape}, expected {(n_out, n_in)}")
+    return matrix
+
+
+def _z_coordinates(n_in: int, n_out: int) -> NDArray[np.float64]:
+    return np.asarray(float(n_in) / n_out * (np.arange(n_out) + 0.5) - 0.5, dtype=np.float64)
+
+
+@lru_cache(maxsize=64)
+def _z_indices(n_in: int, n_out: int) -> NDArray[np.int64]:
+    # Let scipy pick the nearest slice so rounding at .5 matches the numpy path.
+    picked = map_coordinates(
+        np.arange(n_in, dtype=float), [_z_coordinates(n_in, n_out)], order=0, mode="nearest"
+    )
+    indices: NDArray[np.int64] = np.rint(picked).astype(np.int64)
+    return indices
+
+
+@lru_cache(maxsize=64)
+def _z_matrix(n_in: int, n_out: int, order: int) -> NDArray[np.float64]:
+    coordinates = [_z_coordinates(n_in, n_out)]
+    columns = [
+        map_coordinates(impulse, coordinates, order=order, mode="nearest") for impulse in np.eye(n_in)
+    ]
+    matrix: NDArray[np.float64] = np.stack(columns, axis=1)
+    return matrix
+
+
+def _apply_along(x: torch.Tensor, matrix: NDArray[np.float64], dim: int) -> torch.Tensor:
+    weights = torch.from_numpy(matrix).to(x.device)
+    resized: torch.Tensor = torch.tensordot(x, weights, dims=([dim], [1]))
+    return resized.movedim(-1, dim)
+
+
+def resample_torch(
+    data: torch.Tensor,
+    new_shape: Sequence[int],
+    current_spacing: Sequence[float],
+    new_spacing: Sequence[float],
+    *,
+    order: int = 3,
+    order_z: int = 0,
+    force_separate_z: bool | None = False,
+    separate_z_anisotropy_threshold: float = ANISOTROPY_THRESHOLD,
+) -> torch.Tensor:
+    if data.ndim != 4:
+        raise ValueError(f"Expected (C, X, Y, Z) data, got shape {tuple(data.shape)}")
+    old_shape = tuple(data.shape[1:])
+    target = tuple(int(v) for v in new_shape)
+    if old_shape == target:
+        return data
+    if not torch.isfinite(data).all():
+        # NaN/inf need scipy's exact propagation; leave them to the numpy path.
+        raise RuntimeError("non-finite values in the input")
+
+    axis = _separate_axis(
+        force_separate_z, current_spacing, new_spacing, separate_z_anisotropy_threshold
+    )
+    in_plane = [d for d in range(3) if d != axis]
+    # Shrink first so the later, larger products work on less data.
+    in_plane.sort(key=lambda d: target[d] / old_shape[d])
+    output = torch.empty((data.shape[0], *target), dtype=data.dtype, device=data.device)
+    for channel in range(data.shape[0]):
+        x = data[channel].to(torch.float64)
+        # skimage clips each resize to its input range: per slice when one axis is separate.
+        low = x.amin(dim=in_plane, keepdim=True)
+        high = x.amax(dim=in_plane, keepdim=True)
+        for d in in_plane:
+            x = _apply_along(x, _resize_matrix(old_shape[d], target[d], order), d)
+        x = torch.minimum(torch.maximum(x, low), high)
+        if axis is not None and old_shape[axis] != target[axis]:
+            if order_z == 0:
+                indices = torch.from_numpy(_z_indices(old_shape[axis], target[axis]))
+                x = x.index_select(axis, indices.to(x.device))
+            else:
+                x = _apply_along(x, _z_matrix(old_shape[axis], target[axis], order_z), axis)
+        output[channel] = x
     return output

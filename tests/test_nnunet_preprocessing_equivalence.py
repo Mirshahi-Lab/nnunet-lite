@@ -124,7 +124,7 @@ def assert_equal_to_nnunet(
 ) -> None:
     reference, reference_properties = run_nnunet(data, spacing, plans, name, dataset)
     config = _preprocessing_config(plans, _resolve_configuration(plans, name), dataset)
-    output, properties = nl.preprocess(data, spacing, config)
+    output, properties = nl.preprocess(data, spacing, config, device="cpu")
 
     assert output.numpy().dtype == reference.dtype
     assert output.numpy().shape == reference.shape
