@@ -1636,7 +1636,7 @@ wheels = [
 
 [[package]]
 name = "nnunet-lite"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "connected-components-3d" },

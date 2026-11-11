@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import Any, TypeAlias, cast
 
 import numpy as np
 import torch
@@ -119,6 +119,7 @@ class Predictor:
         *,
         device: str | torch.device | None = None,
         batch_size: int = 1,
+        compile: bool = False,
     ) -> None:
         if batch_size < 1:
             raise ValueError("batch_size must be at least 1")
@@ -129,6 +130,11 @@ class Predictor:
             self.bundle = bundle
         else:
             self.bundle = load_bundle(bundle, device=self.device)
+        # bundle.network stays the plain module; only prediction goes through the compiled
+        # one. Compilation itself happens on the first forward pass.
+        self._network = (
+            cast(torch.nn.Module, torch.compile(self.bundle.network)) if compile else self.bundle.network
+        )
 
     @property
     def config(self) -> BundleConfig:
@@ -161,9 +167,7 @@ class Predictor:
         mirror: bool,
     ) -> PredictionResult:
         config = self.config
-        logits = predict_logits(
-            self.bundle.network, tensor, config, mirror=mirror, batch_size=self.batch_size
-        )
+        logits = predict_logits(self._network, tensor, config, mirror=mirror, batch_size=self.batch_size)
         confidence = confidence_stats(logits, label_ids) if label_ids else {}
         segmentation = restore_segmentation(logits, properties, config.preprocessing, device=self.device)
         del logits
@@ -186,11 +190,12 @@ class MultiPredictor:
         *,
         device: str | torch.device | None = None,
         batch_size: int = 1,
+        compile: bool = False,
     ) -> None:
         if not bundles:
             raise ValueError("MultiPredictor needs at least one bundle")
         self.predictors = {
-            name: Predictor(bundle, device=device, batch_size=batch_size)
+            name: Predictor(bundle, device=device, batch_size=batch_size, compile=compile)
             for name, bundle in bundles.items()
         }
 

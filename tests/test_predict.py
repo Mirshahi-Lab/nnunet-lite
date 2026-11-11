@@ -270,6 +270,44 @@ def test_loads_bundles_from_directories(tmp_path: Path) -> None:
     assert torch.equal(single.segmentation, multi["x"].segmentation)
 
 
+def test_compile_is_opt_in_and_only_used_for_prediction(
+    bundle: nl.Bundle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # torch.compile is replaced by a wrapper, so this checks the wiring without a compiler.
+    class Compiled(torch.nn.Module):
+        def __init__(self, module: torch.nn.Module) -> None:
+            super().__init__()
+            self.module = module
+            self.calls = 0
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            self.calls += 1
+            return self.module(x)  # type: ignore[no-any-return]
+
+    compiled: list[Compiled] = []
+
+    def fake_compile(module: torch.nn.Module) -> Compiled:
+        compiled.append(Compiled(module))
+        return compiled[-1]
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    data = volume()
+    expected = nl.Predictor(bundle, device="cpu").predict(data, SPACING)
+    assert not compiled
+
+    network = bundle.network
+    predictor = nl.Predictor(bundle, device="cpu", compile=True)
+    assert len(compiled) == 1 and compiled[0].module is network
+    assert predictor.bundle.network is network
+    result = predictor.predict(data, SPACING)
+    assert compiled[0].calls > 0
+    assert torch.equal(result.segmentation, expected.segmentation)
+
+    multi = nl.MultiPredictor({"a": bundle, "b": bundle}, device="cpu", compile=True)
+    assert len(compiled) == 3
+    assert torch.equal(multi.predict(data, SPACING)["b"].segmentation, expected.segmentation)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_cuda_prediction(bundle: nl.Bundle) -> None:
     data = volume()
